@@ -1,0 +1,329 @@
+{
+  "name": "Topic 10 - Operational Data Management with Google Sheets & Tabular Stores",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "de3365b1-ae40-478a-834f-76631ad68a0f",
+      "name": "Manual_Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n{\njson: {\norderId: \"ORD-7001\",\ncustomerEmail: \"david@enterprise.com\",\nsku: \"SKU-KB-01\",\nquantity: 2,\nnotes: \"Standard order - ample stock available\"\n}\n},\n{\njson: {\norderId: \"ORD-7002\",\ncustomerEmail: \"elena@startup.io\",\nsku: \"SKU-MO-02\",\nquantity: 2,\nnotes: \"Will breach reorder point (6 - 2 = 4 <= 5)\"\n}\n},\n{\n  json: {\norderId: \"ORD-7003\",\ncustomerEmail: \"frank@consulting.org\",\nsku: \"SKU-DS-03\",\nquantity: 5,\nnotes: \"Stockout scenario (requested 5, only 1 on hand)\"\n}\n}\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "06ccfdd7-f60e-4433-816b-df424fb7b7d1",
+      "name": "Code_SimulateOrders"
+    },
+    {
+      "parameters": {
+        "url": "https://n8n.tayanasolutions.com/webhook/mock/sheets/inventory11",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        0
+      ],
+      "id": "0a173486-3bdf-4cbc-8a4e-83bfd66dbf6c",
+      "name": "HTTP_GetInventoryRows"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const order = $node['Code_SimulateOrders'].json;\nconst inventoryRows = $input.item.json;\n// Find matching row by SKU\nconst matchedItem = (Array.isArray(inventoryRows) ? inventoryRows : [inventoryRows]).find(r => r.sku === order.sku);\nif (!matchedItem) {\nreturn {\njson: {\norderId: order.orderId,\nsku: order.sku,\nisAvailable: false,\nreason: \"SKU_NOT_FOUND_IN_INVENTORY\"\n}\n};\n}\nconst currentStock = Number(matchedItem.stockOnHand || 0);\nconst orderQty = Number(order.quantity || 0);\nconst reorderPoint = Number(matchedItem.reorderPoint || 0);\nconst unitPrice = Number(matchedItem.unitPrice || 0);\nconst isAvailable = currentStock >= orderQty;\nconst newStock = isAvailable ? currentStock - orderQty : currentStock;\nconst needsReorder = isAvailable && (newStock <= reorderPoint);\nconst totalPrice = Number((orderQty * unitPrice).toFixed(2));\nreturn {\njson: {\norderId: order.orderId,\ncustomerEmail: order.customerEmail,\nsku: order.sku,\nitemName: matchedItem.itemName,\nquantityOrdered: orderQty,\nunitPrice: unitPrice,\ntotalPrice: totalPrice,\npreviousStock: currentStock,\nnewStock: newStock,\nreorderPoint: reorderPoint,\nisAvailable: isAvailable,\nneedsReorder: needsReorder,\ntimestamp: new Date().toISOString()\n}\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "2fbf8262-e435-4570-87a2-4fa3f723f231",
+      "name": "Code_ReconcileStock"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3cf76a8b-0f4e-4280-ac8e-96fd906756a8",
+              "leftValue": "={{ $json.isAvailable }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        0
+      ],
+      "id": "6bf532bb-6c15-4c7e-87a9-70c9f763aaea",
+      "name": "IF_HasSufficientStock"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\njson: {\nevent: \"ORDER_REJECTED_STOCKOUT\",\norderId: $json.orderId,\nsku: $json.sku,\nrequestedQuantity: $json.quantityOrdered,\navailableStock: $json.previousStock,\nrejectedAt: new Date().toISOString()\n}\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        96
+      ],
+      "id": "2d95e889-2517-401a-a885-5ebab1e6f870",
+      "name": "Log_StockoutRejection"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8n.tayanasolutions.com/webhook/mock/sheets/orders11",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"sku\": $json.sku, \"updatedStock\": $json.newStock, \"updatedAt\": $now.toISO() } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        -96
+      ],
+      "id": "98bbd2f4-b8c8-4576-8b81-a25477f1edb8",
+      "name": "HTTP_UpdateInventoryRow"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://n8n.tayanasolutions.com/webhook/mock/sheets/orders11",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n{\n\"orderId\": $json.orderId,\n\"customerEmail\": $json.customerEmail,\n\"sku\": $json.sku,\n\"quantity\": $json.quantityOrdered,\n\"totalPrice\": $json.totalPrice,\n\"status\": \"FULFILLED\",\n\"timestamp\": new Date().toISOString()\n}\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1344,
+        -96
+      ],
+      "id": "d15b636f-0826-46d5-b991-6cab4d5e58d6",
+      "name": "HTTP_AppendOrderLedger"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6ab4a9b2-8149-467d-b1da-80f4bf22c9c5",
+              "leftValue": "={{ $json.needsReorder }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1568,
+        -96
+      ],
+      "id": "7a89e414-52e9-492e-ac81-35e4f0d1aa9f",
+      "name": "IF_IsLowStockTrigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\njson: {\nalertType: \"PROCUREMENT_LOW_STOCK_WARNING\",\nsku: $json.sku,\nitemName: $json.itemName,\nremainingStock: $json.newStock,\nreorderPoint: $json.reorderPoint,\nsuggestedReorderQuantity: 25,\npriority: \"HIGH\",\ntimestamp: new Date().toISOString()\n}\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1744,
+        -192
+      ],
+      "id": "0d40c5d9-2a96-48da-92af-79f1f19870b9",
+      "name": "Code_BuildReorderAlert"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn [{\njson: {\nbatchStatus: \"INVENTORY_SYNC_COMPLETED\",\ntotalOrdersProcessed: items.length,\nsynchronizedAt: new Date().toISOString()\n}\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1968,
+        -192
+      ],
+      "id": "9d4c8e0d-7e2c-4295-bcc0-0f52b426cf27",
+      "name": "Code_AuditSummary"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code_SimulateOrders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_SimulateOrders": {
+      "main": [
+        [
+          {
+            "node": "HTTP_GetInventoryRows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_GetInventoryRows": {
+      "main": [
+        [
+          {
+            "node": "Code_ReconcileStock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_ReconcileStock": {
+      "main": [
+        [
+          {
+            "node": "IF_HasSufficientStock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_HasSufficientStock": {
+      "main": [
+        [
+          {
+            "node": "HTTP_UpdateInventoryRow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log_StockoutRejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_UpdateInventoryRow": {
+      "main": [
+        [
+          {
+            "node": "HTTP_AppendOrderLedger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_AppendOrderLedger": {
+      "main": [
+        [
+          {
+            "node": "IF_IsLowStockTrigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_IsLowStockTrigger": {
+      "main": [
+        [
+          {
+            "node": "Code_BuildReorderAlert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code_AuditSummary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_BuildReorderAlert": {
+      "main": [
+        [
+          {
+            "node": "Code_AuditSummary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "f2289f02-f154-4238-8666-2400ab43f219",
+  "meta": {
+    "instanceId": "a03c7678428ef19ededbf912f16f7d5798ec7b9ab4c17f2a2def6a9e791e7215"
+  },
+  "nodeGroups": [],
+  "id": "VXHlGGcX3clBnTHx",
+  "tags": []
+}
